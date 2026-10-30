@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'group16_gradio_app'
+    static_configs:
+      - targets: ['group16-recipebot:8000']  # Gradio metrics
+
+  - job_name: 'group16_node_exporter_gradio'
+    static_configs:
+      - targets: ['group16-recipebot:9100']  # Node Exporter
