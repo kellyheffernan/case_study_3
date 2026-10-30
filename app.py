@@ -1,9 +1,14 @@
 import gradio as gr
-#import spaces commenting this out because we won't be able to use ZeroGPU anymore
 from huggingface_hub import HfApi, InferenceClient #following github cs2 sample code for token validation
 from transformers import pipeline
-import os
 import time
+from prometheus_client import start_http_server, Counter, Summary
+
+# Prometheus metrics, inspired by Professor's cs3 code on github
+REQUEST_COUNTER = Counter("request_count", "Total number of requests")
+SUCCESSFUL_REQUESTS = Counter("successful_request_count", "Total number of successful requests")
+FAILED_REQUESTS = Counter("failed_request_count", "Total number of failed requests")
+REQUEST_DURATION = Summary("request_duration_seconds", "Time spent processing request")
 
 LOCAL_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 REMOTE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -11,23 +16,6 @@ REMOTE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 max_tokens = 900
 temperature = 0.7
 top_p = 0.95
-
-FLAG_FILE_PATH = "/tmp/overload_activate.flag"
-FLAG_STALE_AFTER = 15 * 60   # seconds; monitor refreshes the flag each run, so older = monitor is dead
-REDUCED_MAX_TOKENS = 150
-KNOWN_ACTIONS = {"REDUCE_WORKLOAD", "REJECT_REQUESTS", "BANNER"}
-
-def current_overload_action():
-    """None when normal, otherwise REDUCE_WORKLOAD / REJECT_REQUESTS / BANNER."""
-    try:
-        if time.time() - os.path.getmtime(FLAG_FILE_PATH) > FLAG_STALE_AFTER:
-            return None
-        with open(FLAG_FILE_PATH) as f:
-            first_line = f.readline().strip()
-    except OSError:
-        return None
-    action = first_line.split("=", 1)[1].strip() if first_line.startswith("ACTION=") else ""
-    return action if action in KNOWN_ACTIONS else "REDUCE_WORKLOAD"   # flag exists but unreadable: fail toward less load
 
 pipe = pipeline(
     "text-generation",
@@ -109,73 +97,76 @@ def respond(
     use_local_model,
     hf_token, #this is going to be provided by the user 
  ):
-    action = current_overload_action()
-
-    if action == "REJECT_REQUESTS":
-        yield "The system is currently at capacity. Please try again in a few minutes."
-        return
-
-    effective_max_tokens = REDUCED_MAX_TOKENS if action == "REDUCE_WORKLOAD" else max_tokens
-    banner = "The system is operating near capacity; responses may be slower.\n\n" if action == "BANNER" else ""
-
-    messages = [{"role": "system", "content": system_message}]
-    messages.extend(normalize_history(history))
-    pantry_text = ", ".join(pantry_staples) if pantry_staples else "None selected"
-    messages.append(
-    {
-        "role": "user",
-        "content": (
-            f"{message}\n\n"
-            f"Time Required: {time_required}\n"
-            f"Pantry Staples Available: {pantry_text}"
-        ),
-    }
-)
-
-    if use_local_model:
-        print("[MODE] local")
-
-        response = local_generate(
-            messages,
-            effective_max_tokens,
-            temperature,
-            top_p,
-        )
-
-        yield banner + response
-        return
-
-    print("[MODE] api")
-
-#user needs to provide their Hugging Face token now to use the API model instead of how we did it for cs1
-    if not hf_token:
-        yield "⚠️ Please enter your Hugging Face token first."
-        return
-
-    client = InferenceClient(
-        token=hf_token, #user is providing this now
-        model=REMOTE_MODEL,
+    REQUEST_COUNTER.inc()  # Increment the request count metric
+    start_t = time.perf_counter()
+    try:
+        messages = [{"role": "system", "content": system_message}]
+        messages.extend(normalize_history(history))
+        pantry_text = ", ".join(pantry_staples) if pantry_staples else "None selected"
+        messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"{message}\n\n"
+                f"Time Required: {time_required}\n"
+                f"Pantry Staples Available: {pantry_text}"
+            ),
+        }
     )
 
-    response = ""
+        if use_local_model:
+            print("[MODE] local")
 
-    for chunk in client.chat_completion(
-        messages,
-        max_tokens=effective_max_tokens,
-        stream=True,
-        temperature=temperature,
-        top_p=top_p,
-    ):
-        choices = chunk.choices
-        token = ""
+            response = local_generate(
+                messages,
+                max_tokens,
+                temperature,
+                top_p,
+            )
 
-        if len(choices) and choices[0].delta.content:
-            token = choices[0].delta.content
+            SUCCESSFUL_REQUESTS.inc()
+            yield response
+            return
 
-        response += token
-        yield banner + response
+        print("[MODE] api")
 
-#need to validate user's token now
+    #user needs to provide their Hugging Face token now to use the API model instead of how we did it for cs1
+        if not hf_token or not hf_token.strip():
+            FAILED_REQUESTS.inc()
+            yield "⚠️ Please enter your Hugging Face token first."
+            return
+
+        client = InferenceClient(
+            token=hf_token, #user is providing this now
+            model=REMOTE_MODEL,
+        )
+
+        response = ""
+
+        for chunk in client.chat_completion(
+            messages,
+            max_tokens=max_tokens,
+            stream=True,
+            temperature=temperature,
+            top_p=top_p,
+        ):
+            choices = chunk.choices
+            token = ""
+
+            if len(choices) and choices[0].delta.content:
+                token = choices[0].delta.content
+
+            response += token
+            yield response
+
+        SUCCESSFUL_REQUESTS.inc()
+    except Exception as e:
+        FAILED_REQUESTS.inc()
+        yield f"Error: {e}"
+    finally:
+        REQUEST_DURATION.observe(time.perf_counter() - start_t)
+        
+    #need to validate user's token now
 def validate_hf_token(hf_token):
     if not hf_token or not hf_token.strip():
         return "⚠️ Enter a Hugging Face token."
@@ -285,6 +276,7 @@ with gr.Blocks() as demo:
 
 
 if __name__ == "__main__":
+    start_http_server(8000)  #start prometheus metrics on port 8000
     demo.launch(
         theme=gr.themes.Soft(),
         css=fancy_css,
