@@ -4,11 +4,11 @@ from transformers import pipeline
 import time
 from prometheus_client import start_http_server, Counter, Summary
 
-# Prometheus metrics, inspired by Professor's cs3 code on github
-REQUEST_COUNTER = Counter("request_count", "Total number of requests")
-SUCCESSFUL_REQUESTS = Counter("successful_request_count", "Total number of successful requests")
-FAILED_REQUESTS = Counter("failed_request_count", "Total number of failed requests")
-REQUEST_DURATION = Summary("request_duration_seconds", "Time spent processing request")
+# Prometheus metrics, inspired by Professor's cs3 code on github, but distinguishes between models for grafana comparison
+REQUEST_COUNTER = Counter("request_count", "Total number of requests", ["model"])
+SUCCESSFUL_REQUESTS = Counter("successful_request_count", "Total number of successful requests", ["model"])
+FAILED_REQUESTS = Counter("failed_request_count", "Total number of failed requests", ["model"])
+REQUEST_DURATION = Summary("request_duration_seconds", "Time spent processing request", ["model"])
 
 LOCAL_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 REMOTE_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -97,7 +97,8 @@ def respond(
     use_local_model,
     hf_token, #this is going to be provided by the user 
  ):
-    REQUEST_COUNTER.inc()  # Increment the request count metric
+    model = "local" if use_local_model else "remote"
+    REQUEST_COUNTER.labels(model=model).inc()  # Increment the request count metric
     start_t = time.perf_counter()
     try:
         messages = [{"role": "system", "content": system_message}]
@@ -124,7 +125,7 @@ def respond(
                 top_p,
             )
 
-            SUCCESSFUL_REQUESTS.inc()
+            SUCCESSFUL_REQUESTS.labels(model=model).inc()
             yield response
             return
 
@@ -132,7 +133,7 @@ def respond(
 
     #user needs to provide their Hugging Face token now to use the API model instead of how we did it for cs1
         if not hf_token or not hf_token.strip():
-            FAILED_REQUESTS.inc()
+            FAILED_REQUESTS.labels(model=model).inc()
             yield "⚠️ Please enter your Hugging Face token first."
             return
 
@@ -159,12 +160,12 @@ def respond(
             response += token
             yield response
 
-        SUCCESSFUL_REQUESTS.inc()
+        SUCCESSFUL_REQUESTS.labels(model=model).inc()
     except Exception as e:
-        FAILED_REQUESTS.inc()
+        FAILED_REQUESTS.labels(model=model).inc()
         yield f"Error: {e}"
     finally:
-        REQUEST_DURATION.observe(time.perf_counter() - start_t)
+        REQUEST_DURATION.labels(model=model).observe(time.perf_counter() - start_t)
         
     #need to validate user's token now
 def validate_hf_token(hf_token):
