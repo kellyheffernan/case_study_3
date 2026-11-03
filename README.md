@@ -2,14 +2,14 @@
 
 ## Overview: Container Names & Ports
 ### Container Domain Names: all on Docker network 'monitoring'
-Product Container Domain Name: group16-recipebot
-Prometheus Container Domain Name: group16-prometheus
-Grafana Container Domain Name: TBD
+Product Container Domain Name: group16-recipebot  
+Prometheus Container Domain Name: group16-prometheus  
+Grafana Container Domain Name: TBD  
 ### External Ports
-7000: Chatbot (Internal: 7860)
-7001: Prometheus metrics (Internal: 8000)
-7002: Node Exporter metrics (Internal: 9100)
-7003?: TBD, placeholder for Grafana 
+7000: Chatbot (Internal: 7860)  
+7001: Prometheus metrics (Internal: 8000)  
+7002: Node Exporter metrics (Internal: 9100)  
+7003?: TBD, placeholder for Grafana   
 
 ## Part 1 - Deployment of Products on Docker Containers on the Shared VM - app.py, Dockerfile
 ### Local & API Based Product
